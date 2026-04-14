@@ -11,7 +11,10 @@ Environment variables:
 
 import csv
 import io
+import json
 import os
+import re
+import urllib.request
 import uvicorn
 from pathlib import Path
 from starlette.responses import PlainTextResponse
@@ -24,8 +27,18 @@ from tracker import PLATINUM, ROMAN, ICON, AAA_SCORE, evaluate
 
 # ── Config ───────────────────────────────────────────────────────────────────────
 
-SCORES_FILE = Path(os.environ.get("SCORES_PATH", "/data/scores.csv"))
-API_KEY     = os.environ.get("DDR_API_KEY", "")
+SCORES_FILE   = Path(os.environ.get("SCORES_PATH", "/data/scores.csv"))
+PLAYLIST_FILE = Path(os.environ.get("SCORES_PATH", "/data/scores.csv")).parent / "playlist.json"
+API_KEY       = os.environ.get("DDR_API_KEY", "")
+
+# Maps 3icecream full difficulty name → standard DDR abbreviation
+DIFF_ABBREV = {
+    "BEGINNER":  "BEG",
+    "BASIC":     "BSP",
+    "DIFFICULT": "DSP",
+    "EXPERT":    "ESP",
+    "CHALLENGE": "CSP",
+}
 
 mcp = FastMCP("DDR Tracker")
 
@@ -55,6 +68,74 @@ def save_scores(csv_text: str) -> int:
     SCORES_FILE.parent.mkdir(parents=True, exist_ok=True)
     SCORES_FILE.write_text(csv_text.strip(), encoding="utf-8")
     return sum(1 for _ in csv.DictReader(io.StringIO(csv_text.strip())))
+
+# ── Playlist I/O ─────────────────────────────────────────────────────────────────
+
+def load_playlist() -> list:
+    """Load playlist entries from JSON. Returns empty list if no file exists."""
+    if not PLAYLIST_FILE.exists():
+        return []
+    return json.loads(PLAYLIST_FILE.read_text(encoding="utf-8"))
+
+
+def save_playlist(entries: list) -> None:
+    PLAYLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PLAYLIST_FILE.write_text(json.dumps(entries, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def scrape_song_page(url: str) -> dict:
+    """
+    Fetch a 3icecream.com song details page and extract chart info.
+
+    Returns:
+        {song_id, song_name, charts: [{difficulty, rating, youtube_url}]}
+        Only charts with rating >= 10 are included.
+    """
+    m = re.search(r'/song_details/([A-Za-z0-9]+)', url)
+    if not m:
+        raise ValueError(f"Could not find a song ID in URL: {url}")
+    song_id = m.group(1)
+
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        html = resp.read().decode("utf-8")
+
+    # Song title
+    mt = re.search(r'<span class="sp-title outlined color-vibrant-main">([^<]+)</span>', html)
+    song_name = mt.group(1).strip() if mt else "Unknown"
+
+    # Difficulty names indexed by color number (0=BEG … 4=CSP)
+    diff_names = {m.group(1): m.group(2)
+                  for m in re.finditer(r'sp-difficulty-name diff-color-(\d)">([A-Z]+)<', html)}
+
+    # Ratings indexed by color number
+    ratings = {m.group(1): int(m.group(2))
+               for m in re.finditer(r'sp-difficulty diff-color-(\d)">(\d+)<', html)}
+
+    # YouTube URLs indexed by div-share id ("0-N" → index N)
+    youtube_urls = {}
+    for block_m in re.finditer(
+        r'<div class="div-share" id="0-(\d)">(.*?)</div>', html, re.DOTALL
+    ):
+        idx   = block_m.group(1)
+        block = block_m.group(2)
+        yt    = re.search(r'href="(https://www\.youtube\.com/watch\?v=[^"]+)"', block)
+        if yt:
+            youtube_urls[idx] = yt.group(1)
+
+    charts = []
+    for idx in sorted(diff_names):
+        rating = ratings.get(idx)
+        if rating is None or rating < 10:
+            continue
+        charts.append({
+            "difficulty":  DIFF_ABBREV.get(diff_names[idx], diff_names[idx]),
+            "rating":      rating,
+            "youtube_url": youtube_urls.get(idx),
+        })
+
+    return {"song_id": song_id, "song_name": song_name, "charts": charts}
+
 
 # ── Display helpers ───────────────────────────────────────────────────────────────
 
@@ -237,6 +318,133 @@ def upload_scores(csv_text: str) -> str:
 
     n = save_scores(csv_text)
     return f"✅ Saved {n} score entries. Run check_progress to see your updated stats."
+
+
+# ── Playlist tools ───────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def add_to_playlist(url: str) -> str:
+    """
+    Add a song to your practice playlist from a 3icecream.com song page URL.
+    All difficulties rated 10 or higher are stored (DSP, ESP, CSP as applicable).
+
+    Args:
+        url: A 3icecream.com song details URL, e.g.
+             https://3icecream.com/ddr/song_details/SONG_ID
+    """
+    try:
+        song = scrape_song_page(url)
+    except Exception as e:
+        return f"Error fetching song page: {e}"
+
+    if not song["charts"]:
+        return f"No charts rated 10+ found for this song."
+
+    playlist = load_playlist()
+    added, skipped = [], []
+
+    for chart in song["charts"]:
+        entry = {
+            "song_id":     song["song_id"],
+            "song_name":   song["song_name"],
+            "difficulty":  chart["difficulty"],
+            "rating":      chart["rating"],
+            "youtube_url": chart["youtube_url"],
+        }
+        # Avoid duplicates
+        exists = any(
+            e["song_id"] == entry["song_id"] and e["difficulty"] == entry["difficulty"]
+            for e in playlist
+        )
+        if exists:
+            skipped.append(f"{chart['difficulty']} (lv{chart['rating']})")
+        else:
+            playlist.append(entry)
+            added.append(f"{chart['difficulty']} (lv{chart['rating']})")
+
+    save_playlist(playlist)
+
+    lines = [f"📋 {song['song_name']}"]
+    if added:
+        lines.append(f"  ✅ Added: {', '.join(added)}")
+    if skipped:
+        lines.append(f"  ⏭  Already on list: {', '.join(skipped)}")
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def get_playlist(level: int = 0) -> str:
+    """
+    Show your practice playlist.
+
+    Args:
+        level: Filter by rating (e.g. 14 shows only lv14 charts). Pass 0 or omit for all.
+    """
+    playlist = load_playlist()
+    if not playlist:
+        return "Your playlist is empty. Use add_to_playlist with a 3icecream.com URL to add songs."
+
+    entries = [e for e in playlist if level == 0 or e["rating"] == level]
+    if not entries:
+        return f"No lv{level} charts on your playlist."
+
+    header = f"Practice playlist{f' — lv{level}' if level else ''} ({len(entries)} charts)"
+    lines  = [header, ""]
+
+    # Group by rating for the "all levels" view
+    by_rating: dict[int, list] = {}
+    for e in entries:
+        by_rating.setdefault(e["rating"], []).append(e)
+
+    for rating in sorted(by_rating):
+        if level == 0:
+            lines.append(f"── Level {rating} ──")
+        for e in by_rating[rating]:
+            yt   = f"  🎬 {e['youtube_url']}" if e["youtube_url"] else ""
+            lines.append(f"  {e['song_name']}  [{e['difficulty']}]{yt}")
+        if level == 0:
+            lines.append("")
+
+    return "\n".join(lines)
+
+
+@mcp.tool()
+def remove_from_playlist(song_name: str, difficulty: str = "") -> str:
+    """
+    Remove a song from your practice playlist.
+
+    Args:
+        song_name: Song name (case-insensitive, partial match is fine).
+        difficulty: Specific difficulty to remove (e.g. ESP). Leave blank to remove all
+                    difficulties for the matched song.
+    """
+    playlist = load_playlist()
+    if not playlist:
+        return "Your playlist is empty."
+
+    name_lower = song_name.lower()
+    diff_upper = difficulty.upper().strip()
+
+    matches   = [e for e in playlist if name_lower in e["song_name"].lower()]
+    if not matches:
+        return f"No songs matching '{song_name}' found on your playlist."
+
+    if diff_upper:
+        to_remove = [e for e in matches if e["difficulty"] == diff_upper]
+        if not to_remove:
+            found_diffs = ", ".join(sorted({e["difficulty"] for e in matches}))
+            return (f"No {diff_upper} chart found for '{matches[0]['song_name']}'. "
+                    f"Available: {found_diffs}")
+    else:
+        to_remove = matches
+
+    new_playlist = [e for e in playlist if e not in to_remove]
+    save_playlist(new_playlist)
+
+    removed_desc = ", ".join(
+        f"{e['difficulty']} (lv{e['rating']})" for e in to_remove
+    )
+    return f"✅ Removed from playlist: {to_remove[0]['song_name']} — {removed_desc}"
 
 
 # ── Auth middleware ───────────────────────────────────────────────────────────────
