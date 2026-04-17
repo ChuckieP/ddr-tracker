@@ -50,6 +50,7 @@ Two entry points sharing a common scoring engine:
 ### Storage
 - Local: reads/writes from current directory (`scores*.csv`, `playlist.json`)
 - Server: `/data/scores.csv` and `/data/playlist.json` (Railway persistent volume)
+- **A Railway volume must be mounted at `/data`** — without it, data resets on every deploy. Create with: `railway volume add --mount-path /data`
 
 ### Authentication
 `AuthMiddleware` in `server.py` supports two modes simultaneously:
