@@ -75,7 +75,10 @@ def load_playlist() -> list:
     """Load playlist entries from JSON. Returns empty list if no file exists."""
     if not PLAYLIST_FILE.exists():
         return []
-    return json.loads(PLAYLIST_FILE.read_text(encoding="utf-8"))
+    entries = json.loads(PLAYLIST_FILE.read_text(encoding="utf-8"))
+    for e in entries:
+        e.setdefault("tags", [])
+    return entries
 
 
 def save_playlist(entries: list) -> None:
@@ -366,25 +369,33 @@ def add_to_playlist(url: str, difficulty: str) -> str:
 
 
 @mcp.tool()
-def get_playlist(level: int = 0) -> str:
+def get_playlist(level: int = 0, tag: str = "") -> str:
     """
     Show your practice playlist.
 
     Args:
         level: Filter by rating (e.g. 14 shows only lv14 charts). Pass 0 or omit for all.
+        tag:   Filter by tag (e.g. "crossover"). Leave blank for all tags.
     """
     playlist = load_playlist()
     if not playlist:
         return "Your playlist is empty. Use add_to_playlist with a 3icecream.com URL to add songs."
 
-    entries = [e for e in playlist if level == 0 or e["rating"] == level]
-    if not entries:
-        return f"No lv{level} charts on your playlist."
+    tag_lower = tag.lower().strip()
+    entries = [
+        e for e in playlist
+        if (level == 0 or e["rating"] == level)
+        and (not tag_lower or tag_lower in e["tags"])
+    ]
 
-    header = f"Practice playlist{f' — lv{level}' if level else ''} ({len(entries)} charts)"
+    if not entries:
+        desc = " and ".join(filter(None, [f"lv{level}" if level else "", f'tag "{tag}"' if tag else ""]))
+        return f"No charts matching {desc} on your playlist."
+
+    header_parts = filter(None, [f"lv{level}" if level else "", f'#{tag}' if tag else ""])
+    header = f"Practice playlist{' — ' + ', '.join(header_parts) if any(header_parts) else ''} ({len(entries)} charts)"
     lines  = [header, ""]
 
-    # Group by rating for the "all levels" view
     by_rating: dict[int, list] = {}
     for e in entries:
         by_rating.setdefault(e["rating"], []).append(e)
@@ -393,8 +404,9 @@ def get_playlist(level: int = 0) -> str:
         if level == 0:
             lines.append(f"── Level {rating} ──")
         for e in by_rating[rating]:
-            yt   = f"  🎬 {e['youtube_url']}" if e["youtube_url"] else ""
-            lines.append(f"  {e['song_name']}  [{e['difficulty']}]{yt}")
+            yt      = f"  🎬 {e['youtube_url']}" if e["youtube_url"] else ""
+            tags    = f"  [{', '.join(e['tags'])}]" if e["tags"] else ""
+            lines.append(f"  {e['song_name']}  [{e['difficulty']}]{tags}{yt}")
         if level == 0:
             lines.append("")
 
@@ -438,6 +450,84 @@ def remove_from_playlist(song_name: str, difficulty: str = "") -> str:
         f"{e['difficulty']} (lv{e['rating']})" for e in to_remove
     )
     return f"✅ Removed from playlist: {to_remove[0]['song_name']} — {removed_desc}"
+
+
+# ── Tagging tools ────────────────────────────────────────────────────────────────
+
+@mcp.tool()
+def tag_song(song_name: str, tags: str, difficulty: str = "") -> str:
+    """
+    Add tags to a song on your practice playlist.
+
+    Args:
+        song_name:  Song name (case-insensitive, partial match is fine).
+        tags:       Comma-separated tags to add, e.g. "crossover, favorite".
+        difficulty: Scope to a specific difficulty (e.g. ESP). Leave blank to tag all
+                    matching difficulties for the song.
+    """
+    playlist = load_playlist()
+    new_tags  = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    if not new_tags:
+        return "No valid tags provided."
+
+    name_lower = song_name.lower()
+    diff_upper = difficulty.upper().strip()
+    matches    = [e for e in playlist if name_lower in e["song_name"].lower()]
+    if not matches:
+        return f"No songs matching '{song_name}' found on your playlist."
+
+    if diff_upper:
+        targets = [e for e in matches if e["difficulty"] == diff_upper]
+        if not targets:
+            found = ", ".join(sorted({e["difficulty"] for e in matches}))
+            return f"No {diff_upper} chart for '{matches[0]['song_name']}'. Available: {found}"
+    else:
+        targets = matches
+
+    for e in targets:
+        e["tags"] = sorted(set(e["tags"]) | set(new_tags))
+
+    save_playlist(playlist)
+    desc = ", ".join(f"{e['difficulty']} (lv{e['rating']})" for e in targets)
+    return f"✅ Tagged {targets[0]['song_name']} [{desc}] with: {', '.join(new_tags)}"
+
+
+@mcp.tool()
+def untag_song(song_name: str, tags: str, difficulty: str = "") -> str:
+    """
+    Remove tags from a song on your practice playlist.
+
+    Args:
+        song_name:  Song name (case-insensitive, partial match is fine).
+        tags:       Comma-separated tags to remove, e.g. "crossover".
+        difficulty: Scope to a specific difficulty (e.g. ESP). Leave blank to untag all
+                    matching difficulties for the song.
+    """
+    playlist   = load_playlist()
+    remove_tags = [t.strip().lower() for t in tags.split(",") if t.strip()]
+    if not remove_tags:
+        return "No valid tags provided."
+
+    name_lower = song_name.lower()
+    diff_upper = difficulty.upper().strip()
+    matches    = [e for e in playlist if name_lower in e["song_name"].lower()]
+    if not matches:
+        return f"No songs matching '{song_name}' found on your playlist."
+
+    if diff_upper:
+        targets = [e for e in matches if e["difficulty"] == diff_upper]
+        if not targets:
+            found = ", ".join(sorted({e["difficulty"] for e in matches}))
+            return f"No {diff_upper} chart for '{matches[0]['song_name']}'. Available: {found}"
+    else:
+        targets = matches
+
+    for e in targets:
+        e["tags"] = [t for t in e["tags"] if t not in remove_tags]
+
+    save_playlist(playlist)
+    desc = ", ".join(f"{e['difficulty']} (lv{e['rating']})" for e in targets)
+    return f"✅ Removed tags [{', '.join(remove_tags)}] from {targets[0]['song_name']} [{desc}]"
 
 
 # ── Auth middleware ───────────────────────────────────────────────────────────────
