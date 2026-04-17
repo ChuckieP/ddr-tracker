@@ -43,7 +43,7 @@ Two entry points sharing a common scoring engine:
 | `check_progress(level=0)` | Overview of all levels or detailed report |
 | `get_focus()` | AI-prioritized recommendations from current progress |
 | `upload_scores(csv_text)` | Accept pasted CSV, validate & store |
-| `add_to_playlist(url)` | Scrape 3icecream.com song page, store charts rated 10+ |
+| `add_to_playlist(url, difficulty)` | Scrape 3icecream.com song page, store the specified chart (DSP/ESP/CSP) |
 | `get_playlist(level=0)` | Display playlist, optionally filtered by level |
 | `remove_from_playlist(song_name, difficulty="")` | Remove by partial name match |
 

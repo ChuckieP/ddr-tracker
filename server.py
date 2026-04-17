@@ -323,53 +323,46 @@ def upload_scores(csv_text: str) -> str:
 # ── Playlist tools ───────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def add_to_playlist(url: str) -> str:
+def add_to_playlist(url: str, difficulty: str) -> str:
     """
-    Add a song to your practice playlist from a 3icecream.com song page URL.
-    All difficulties rated 10 or higher are stored (DSP, ESP, CSP as applicable).
+    Add a specific chart from a 3icecream.com song page to your practice playlist.
 
     Args:
-        url: A 3icecream.com song details URL, e.g.
-             https://3icecream.com/ddr/song_details/SONG_ID
+        url:        A 3icecream.com song details URL, e.g.
+                    https://3icecream.com/ddr/song_details/SONG_ID
+        difficulty: The chart to add: DSP, ESP, or CSP.
     """
     try:
         song = scrape_song_page(url)
     except Exception as e:
         return f"Error fetching song page: {e}"
 
-    if not song["charts"]:
-        return f"No charts rated 10+ found for this song."
+    diff_upper = difficulty.upper().strip()
+    chart = next((c for c in song["charts"] if c["difficulty"] == diff_upper), None)
+
+    if chart is None:
+        available = ", ".join(f"{c['difficulty']} (lv{c['rating']})" for c in song["charts"])
+        if available:
+            return f"No {diff_upper} chart found for {song['song_name']}. Available: {available}"
+        return f"No charts rated 10+ found for {song['song_name']}."
 
     playlist = load_playlist()
-    added, skipped = [], []
+    exists = any(
+        e["song_id"] == song["song_id"] and e["difficulty"] == diff_upper
+        for e in playlist
+    )
+    if exists:
+        return f"⏭  {song['song_name']} [{diff_upper}] is already on your playlist."
 
-    for chart in song["charts"]:
-        entry = {
-            "song_id":     song["song_id"],
-            "song_name":   song["song_name"],
-            "difficulty":  chart["difficulty"],
-            "rating":      chart["rating"],
-            "youtube_url": chart["youtube_url"],
-        }
-        # Avoid duplicates
-        exists = any(
-            e["song_id"] == entry["song_id"] and e["difficulty"] == entry["difficulty"]
-            for e in playlist
-        )
-        if exists:
-            skipped.append(f"{chart['difficulty']} (lv{chart['rating']})")
-        else:
-            playlist.append(entry)
-            added.append(f"{chart['difficulty']} (lv{chart['rating']})")
-
+    playlist.append({
+        "song_id":     song["song_id"],
+        "song_name":   song["song_name"],
+        "difficulty":  chart["difficulty"],
+        "rating":      chart["rating"],
+        "youtube_url": chart["youtube_url"],
+    })
     save_playlist(playlist)
-
-    lines = [f"📋 {song['song_name']}"]
-    if added:
-        lines.append(f"  ✅ Added: {', '.join(added)}")
-    if skipped:
-        lines.append(f"  ⏭  Already on list: {', '.join(skipped)}")
-    return "\n".join(lines)
+    return f"✅ Added {song['song_name']} [{diff_upper} lv{chart['rating']}] to your playlist."
 
 
 @mcp.tool()
