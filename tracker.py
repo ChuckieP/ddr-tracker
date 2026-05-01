@@ -1,134 +1,161 @@
 #!/usr/bin/env python3
 """
-DDR Life4 Platinum Progress Tracker
-Usage: python tracker.py [csv_file] [1-5]
-  csv_file  — path to scores CSV export (default: latest scores*.csv in current dir)
-  1-5       — show detailed report for a specific Platinum level only
+DDR Life4 Rank Progress Tracker
+Usage: python tracker.py [csv_file] [rank]
+  csv_file — path to scores CSV export (default: latest scores*.csv in current dir)
+  rank     — rank to report on, e.g. platinum1, gold3, "Platinum III"
+             (default: show overview + detail for all Platinum levels)
 """
 
 import csv
+import json
 import sys
 from pathlib import Path
 
 # ── Constants ────────────────────────────────────────────────────────────────────
 
 AAA_SCORE = 990_000
-ROMAN = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V"}
+ROMAN     = {1: "I", 2: "II", 3: "III", 4: "IV", 5: "V"}
+ICON      = {True: "✅", False: "❌", None: "❓"}
 
-# ── Requirements ─────────────────────────────────────────────────────────────────
-#
-# Requirement types:
-#   volume — clear N songs at given level; score = min score (None = any clear)
-#            exc = # exception slots, exc_score = min score for exceptions (None = basic clear)
-#   peak   — achieve score >= threshold on any song at given level
-#   aaa    — achieve AAA (990k+) on N songs at given level
-#   pfc    — achieve PFC lamp on N songs at level >= level_min
-#   trial  — trial tier achievement (not in CSV export)
+_INT_TO_ROMAN = {v: k for k, v in ROMAN.items()}
 
-PLATINUM = {
-    1: {
-        "main": [
-            {"label": "Clear 60 lv14s @ 810k+",  "type": "volume", "level": 14, "count": 60,  "score": 810_000, "exc": 12, "exc_score": 760_000},
-            {"label": "960k+ on a lv14",           "type": "peak",   "level": 14, "score": 960_000},
-            {"label": "Clear 10 lv15s @ 760k+",  "type": "volume", "level": 15, "count": 10,  "score": 760_000, "exc": 2,  "exc_score": None},
-            {"label": "910k+ on a lv15",           "type": "peak",   "level": 15, "score": 910_000},
-            {"label": "Clear a lv16",              "type": "volume", "level": 16, "count": 1,   "score": None,    "exc": 0,  "exc_score": None},
-            {"label": "700k+ on a lv16",           "type": "peak",   "level": 16, "score": 700_000},
-            {"label": "AAA 2 lv13s",               "type": "aaa",    "level": 13, "count": 2},
-            {"label": "PFC a lv11+",               "type": "pfc",    "level_min": 11, "count": 1},
-            {"label": "Gold+ on 1 Trial",          "type": "trial"},
-        ],
-        "subs": [
-            {"label": "AAA 2 lv14s",   "type": "aaa",  "level": 14,    "count": 2},
-            {"label": "960k+ a lv15",  "type": "peak", "level": 15,    "score": 960_000},
-            {"label": "910k+ a lv16",  "type": "peak", "level": 16,    "score": 910_000},
-            {"label": "700k+ a lv17",  "type": "peak", "level": 17,    "score": 700_000},
-            {"label": "PFC a lv13+",   "type": "pfc",  "level_min": 13, "count": 1},
-        ],
-    },
-    2: {
-        "main": [
-            {"label": "Clear 70 lv14s @ 820k+",  "type": "volume", "level": 14, "count": 70,  "score": 820_000, "exc": 14, "exc_score": 770_000},
-            {"label": "970k+ on a lv14",           "type": "peak",   "level": 14, "score": 970_000},
-            {"label": "Clear 20 lv15s @ 770k+",  "type": "volume", "level": 15, "count": 20,  "score": 770_000, "exc": 4,  "exc_score": None},
-            {"label": "920k+ on a lv15",           "type": "peak",   "level": 15, "score": 920_000},
-            {"label": "Clear 2 lv16s",             "type": "volume", "level": 16, "count": 2,   "score": None,    "exc": 0,  "exc_score": None},
-            {"label": "750k+ on a lv16",           "type": "peak",   "level": 16, "score": 750_000},
-            {"label": "AAA 5 lv13s",               "type": "aaa",    "level": 13, "count": 5},
-            {"label": "PFC 3 lv11+",               "type": "pfc",    "level_min": 11, "count": 3},
-            {"label": "Gold+ on 1 Trial",          "type": "trial"},
-        ],
-        "subs": [
-            {"label": "AAA 5 lv14s",   "type": "aaa",  "level": 14,    "count": 5},
-            {"label": "970k+ a lv15",  "type": "peak", "level": 15,    "score": 970_000},
-            {"label": "920k+ a lv16",  "type": "peak", "level": 16,    "score": 920_000},
-            {"label": "750k+ a lv17",  "type": "peak", "level": 17,    "score": 750_000},
-            {"label": "PFC 2 lv13+",   "type": "pfc",  "level_min": 13, "count": 2},
-        ],
-    },
-    3: {
-        "main": [
-            {"label": "Clear 80 lv14s @ 830k+",  "type": "volume", "level": 14, "count": 80,  "score": 830_000, "exc": 16, "exc_score": 780_000},
-            {"label": "980k+ on a lv14",           "type": "peak",   "level": 14, "score": 980_000},
-            {"label": "Clear 30 lv15s @ 780k+",  "type": "volume", "level": 15, "count": 30,  "score": 780_000, "exc": 6,  "exc_score": None},
-            {"label": "930k+ on a lv15",           "type": "peak",   "level": 15, "score": 930_000},
-            {"label": "Clear 3 lv16s",             "type": "volume", "level": 16, "count": 3,   "score": None,    "exc": 0,  "exc_score": None},
-            {"label": "800k+ on a lv16",           "type": "peak",   "level": 16, "score": 800_000},
-            {"label": "AAA 10 lv13s",              "type": "aaa",    "level": 13, "count": 10},
-            {"label": "PFC a lv12+",               "type": "pfc",    "level_min": 12, "count": 1},
-            {"label": "Gold+ on 2 Trials",         "type": "trial"},
-        ],
-        "subs": [
-            {"label": "AAA 10 lv14s",  "type": "aaa",  "level": 14,    "count": 10},
-            {"label": "980k+ a lv15",  "type": "peak", "level": 15,    "score": 980_000},
-            {"label": "930k+ a lv16",  "type": "peak", "level": 16,    "score": 930_000},
-            {"label": "800k+ a lv17",  "type": "peak", "level": 17,    "score": 800_000},
-            {"label": "PFC 3 lv13+",   "type": "pfc",  "level_min": 13, "count": 3},
-        ],
-    },
-    4: {
-        "main": [
-            {"label": "Clear 90 lv14s @ 840k+",  "type": "volume", "level": 14, "count": 90,  "score": 840_000, "exc": 18, "exc_score": 790_000},
-            {"label": "985k+ on a lv14",           "type": "peak",   "level": 14, "score": 985_000},
-            {"label": "Clear 40 lv15s @ 790k+",  "type": "volume", "level": 15, "count": 40,  "score": 790_000, "exc": 8,  "exc_score": None},
-            {"label": "940k+ on a lv15",           "type": "peak",   "level": 15, "score": 940_000},
-            {"label": "Clear 4 lv16s",             "type": "volume", "level": 16, "count": 4,   "score": None,    "exc": 0,  "exc_score": None},
-            {"label": "850k+ on a lv16",           "type": "peak",   "level": 16, "score": 850_000},
-            {"label": "AAA 15 lv13s",              "type": "aaa",    "level": 13, "count": 15},
-            {"label": "PFC 2 lv12+",               "type": "pfc",    "level_min": 12, "count": 2},
-            {"label": "Gold+ on 2 Trials",         "type": "trial"},
-        ],
-        "subs": [
-            {"label": "AAA 15 lv14s",  "type": "aaa",  "level": 14,    "count": 15},
-            {"label": "985k+ a lv15",  "type": "peak", "level": 15,    "score": 985_000},
-            {"label": "940k+ a lv16",  "type": "peak", "level": 16,    "score": 940_000},
-            {"label": "850k+ a lv17",  "type": "peak", "level": 17,    "score": 850_000},
-            {"label": "PFC 4 lv13+",   "type": "pfc",  "level_min": 13, "count": 4},
-        ],
-    },
-    5: {
-        "main": [
-            {"label": "Clear 100 lv14s @ 850k+", "type": "volume", "level": 14, "count": 100, "score": 850_000, "exc": 20, "exc_score": 800_000},
-            {"label": "AAA a lv14",               "type": "peak",   "level": 14, "score": 990_000},
-            {"label": "Clear 50 lv15s @ 800k+",  "type": "volume", "level": 15, "count": 50,  "score": 800_000, "exc": 10, "exc_score": 750_000},
-            {"label": "950k+ on a lv15",           "type": "peak",   "level": 15, "score": 950_000},
-            {"label": "750k+ on 5 lv16s",         "type": "volume", "level": 16, "count": 5,   "score": 750_000, "exc": 0,  "exc_score": None},
-            {"label": "900k+ on a lv16",           "type": "peak",   "level": 16, "score": 900_000},
-            {"label": "AAA 20 lv13s",              "type": "aaa",    "level": 13, "count": 20},
-            {"label": "PFC 5 lv12+",               "type": "pfc",    "level_min": 12, "count": 5},
-            {"label": "Platinum+ on 1 Trial",      "type": "trial"},
-        ],
-        "subs": [
-            {"label": "AAA 20 lv14s",  "type": "aaa",  "level": 14,    "count": 20},
-            {"label": "AAA a lv15",    "type": "peak", "level": 15,    "score": 990_000},
-            {"label": "950k+ a lv16",  "type": "peak", "level": 16,    "score": 950_000},
-            {"label": "900k+ a lv17",  "type": "peak", "level": 17,    "score": 900_000},
-            {"label": "PFC 5 lv13+",   "type": "pfc",  "level_min": 13, "count": 5},
-        ],
-    },
-}
+RANK_TIERS = [
+    "copper", "bronze", "silver", "gold", "platinum",
+    "diamond", "cobalt", "pearl", "topaz", "amethyst",
+    "emerald", "onyx", "ruby",
+]
 
-# ── Data loading ─────────────────────────────────────────────────────────────────
+# ── Rank name handling ────────────────────────────────────────────────────────────
+
+def normalize_rank_name(s: str) -> str | None:
+    """
+    Accept flexible rank names and return the canonical 'tier#' key.
+    Examples: "platinum1", "Platinum I", "platinum 1", "gold_3" → "platinum1", "gold3"
+    Returns None if unrecognized.
+    """
+    s = s.strip().lower().replace("_", " ").replace("-", " ")
+    tier = None
+    for t in RANK_TIERS:
+        if t in s:
+            tier = t
+            s = s.replace(t, "").strip()
+            break
+    if tier is None:
+        return None
+    if s.isdigit() and 1 <= int(s) <= 5:
+        return f"{tier}{s}"
+    upper = s.upper()
+    if upper in _INT_TO_ROMAN:
+        return f"{tier}{_INT_TO_ROMAN[upper]}"
+    return None
+
+
+def rank_display_name(rank_key: str) -> str:
+    """'platinum1' → 'PLATINUM I'"""
+    for tier in RANK_TIERS:
+        if rank_key.startswith(tier):
+            num = int(rank_key[len(tier):])
+            return f"{tier.upper()} {ROMAN[num]}"
+    return rank_key.upper()
+
+# ── Rank data loading ─────────────────────────────────────────────────────────────
+
+_RANK_DATA: dict | None = None
+
+
+def _goal_to_req(goal: dict) -> dict:
+    """Convert a pprx goal object to a tracker requirement dict."""
+    if goal["t"] == "trial":
+        tier  = goal["rank"].title()
+        count = goal["count"]
+        s     = "s" if count > 1 else ""
+        return {"type": "trial", "label": f"{tier}+ on {count} Trial{s}"}
+
+    if goal["t"] in ("calories", "ma_points", "set"):
+        return {"type": "untrackable", "label": f"{goal['t'].replace('_', ' ').title()} requirement"}
+
+    d      = goal["d"]
+    ct     = goal.get("clear_type")
+    count  = goal.get("song_count")
+    score  = goal.get("score")
+    exc    = goal.get("exceptions", 0)
+    exc_sc = goal.get("exception_score")
+    higher = goal.get("higher_diff", False)
+    lvl_s  = f"{d}+" if higher else f"{d}s"
+
+    # PFC requirement
+    if ct == "perfect":
+        n = count or 1
+        plural = f" {n}" if n > 1 else ""
+        return {"type": "pfc", "level_min": d, "count": n,
+                "label": f"PFC{plural} lv{lvl_s}"}
+
+    # GFC (count-based, with or without higher_diff) — trackable
+    if ct == "good" and count is not None:
+        n = count
+        plural = f" {n}" if n > 1 else ""
+        return {"type": "gfc", "level": d, "count": n, "higher_diff": higher,
+                "label": f"GFC{plural} lv{lvl_s}"}
+
+    # GFC all-songs variant (no song_count), life4, sdp, great — not in CSV export
+    if ct in ("good", "life4", "sdp", "great"):
+        return {"type": "untrackable", "label": f"{ct.upper()} requirement lv{d}"}
+
+    # "All songs at level" (no song_count, has score) — total unknown from CSV
+    if count is None:
+        return {"type": "untrackable", "label": f"Score {score // 1000}k+ on all lv{d}s"}
+
+    # Clear (no score threshold)
+    if score is None:
+        label = f"Clear a lv{d}" if count == 1 else f"Clear {count} lv{d}s"
+        return {"type": "volume", "level": d, "count": count, "score": None,
+                "exc": exc, "exc_score": exc_sc, "label": label}
+
+    # Single-song score requirement (peak)
+    if count == 1:
+        label = "AAA" if score == AAA_SCORE else f"{score // 1000}k+"
+        return {"type": "peak", "level": d, "score": score,
+                "label": f"{label} on a lv{d}"}
+
+    # Multi-song AAA
+    if score >= AAA_SCORE:
+        return {"type": "aaa", "level": d, "count": count,
+                "label": f"AAA {count} lv{d}s"}
+
+    # Volume with score threshold
+    return {"type": "volume", "level": d, "count": count, "score": score,
+            "exc": exc, "exc_score": exc_sc,
+            "label": f"Clear {count} lv{d}s @ {score // 1000}k+"}
+
+
+def _load_rank_data() -> dict:
+    global _RANK_DATA
+    if _RANK_DATA is not None:
+        return _RANK_DATA
+    path = Path(__file__).parent / "ranks.json"
+    with open(path, encoding="utf-8") as f:
+        raw = json.load(f)
+    goals   = {g["id"]: g for g in raw["goals"]}
+    out     = {}
+    for rr in raw["rank_requirements"]:
+        name = rr["rank"]
+        out[name] = {
+            "main": [_goal_to_req(goals[gid]) for gid in rr["mandatory_goal_ids"]],
+            "subs": [_goal_to_req(goals[gid]) for gid in rr.get("substitutions", [])],
+        }
+    _RANK_DATA = out
+    return _RANK_DATA
+
+
+def get_rank_reqs(rank_name: str) -> dict | None:
+    """Return {'main': [...], 'subs': [...]} for the given rank, or None if unrecognized."""
+    key = normalize_rank_name(rank_name) if rank_name not in _load_rank_data() else rank_name
+    if key is None:
+        return None
+    return _load_rank_data().get(key)
+
+# ── Score loading ─────────────────────────────────────────────────────────────────
 
 def load_scores(csv_path):
     songs = []
@@ -157,11 +184,11 @@ def evaluate(req, songs):
     t = req["type"]
 
     if t == "volume":
-        level       = req["level"]
-        count       = req["count"]
+        level        = req["level"]
+        count        = req["count"]
         score_thresh = req.get("score")
-        exc         = req.get("exc", 0)
-        exc_score   = req.get("exc_score")
+        exc          = req.get("exc", 0)
+        exc_score    = req.get("exc_score")
 
         cleared = [s for s in songs if s["level"] == level and s["lamp"] != "Fail"]
 
@@ -182,79 +209,87 @@ def evaluate(req, songs):
             used_exc = 0
 
         effective = len(main) + used_exc
-        met = effective >= count
-        detail = f"{len(main)} main + {used_exc} exc" if used_exc > 0 else ""
-        return met, f"{effective}/{count}", detail
+        detail    = f"{len(main)} main + {used_exc} exc" if used_exc > 0 else ""
+        return effective >= count, f"{effective}/{count}", detail
 
     elif t == "peak":
-        level       = req["level"]
+        level        = req["level"]
         score_thresh = req["score"]
-        lvl_songs   = [s for s in songs if s["level"] == level]
+        lvl_songs    = [s for s in songs if s["level"] == level]
         if not lvl_songs:
             return False, "–", f"no lv{level} scores"
         best = max(lvl_songs, key=lambda s: s["score"])
         met  = best["score"] >= score_thresh
         gap  = f"  (need +{score_thresh - best['score']:,})" if not met else " ✓"
-        detail = best["name"] if not met else ""
-        return met, f"{best['score']:,}{gap}", detail
+        return met, f"{best['score']:,}{gap}", best["name"] if not met else ""
 
     elif t == "aaa":
-        level    = req["level"]
-        count    = req["count"]
-        aaa_list = [s for s in songs if s["level"] == level and s["score"] >= AAA_SCORE]
-        n        = len(aaa_list)
-        met      = n >= count
+        level     = req["level"]
+        count     = req["count"]
+        aaa_list  = [s for s in songs if s["level"] == level and s["score"] >= AAA_SCORE]
+        n         = len(aaa_list)
         lvl_songs = [s for s in songs if s["level"] == level]
-        if lvl_songs and not met:
+        if lvl_songs and n < count:
             best   = max(lvl_songs, key=lambda s: s["score"])
             detail = f"best: {best['score']:,}  (need +{AAA_SCORE - best['score']:,})"
         else:
             detail = ""
-        return met, f"{n}/{count}", detail
+        return n >= count, f"{n}/{count}", detail
 
     elif t == "pfc":
         level_min = req["level_min"]
         count     = req["count"]
         pfcs      = [s for s in songs if s["level"] >= level_min and s["lamp"] == "PFC"]
         n         = len(pfcs)
-        met       = n >= count
-        if not met:
-            near = [s for s in songs if s["level"] >= level_min and s["lamp"] in ("MFC", "GFC", "FC")]
-            if near:
-                best   = max(near, key=lambda s: s["score"])
-                detail = f"best lamp: {best['lamp']} on {best['name']} lv{best['level']}"
-            else:
-                detail = "no FC lamps yet at this level"
+        if n < count:
+            near   = [s for s in songs if s["level"] >= level_min and s["lamp"] in ("MFC", "GFC", "FC")]
+            detail = (f"best lamp: {max(near, key=lambda s: s['score'])['lamp']} on "
+                      f"{max(near, key=lambda s: s['score'])['name']} lv{max(near, key=lambda s: s['score'])['level']}"
+                      if near else "no FC lamps yet at this level")
         else:
             detail = ""
-        return met, f"{n}/{count}", detail
+        return n >= count, f"{n}/{count}", detail
 
-    elif t == "trial":
+    elif t == "gfc":
+        level  = req["level"]
+        count  = req["count"]
+        higher = req.get("higher_diff", False)
+        gfc_lamps = ("GFC", "PFC", "MFC")
+        if higher:
+            gfcs = [s for s in songs if s["level"] >= level and s["lamp"] in gfc_lamps]
+        else:
+            gfcs = [s for s in songs if s["level"] == level and s["lamp"] in gfc_lamps]
+        n = len(gfcs)
+        return n >= count, f"{n}/{count}", ""
+
+    elif t in ("trial", "untrackable"):
         return None, "?", "not in export"
 
     return False, "?", ""
 
 # ── Display ──────────────────────────────────────────────────────────────────────
 
-ICON = {True: "✅", False: "❌", None: "❓"}
+def print_rank_report(rank_key: str, songs: list):
+    reqs_data = get_rank_reqs(rank_key)
+    if reqs_data is None:
+        print(f"Unknown rank: '{rank_key}'")
+        return
 
-def print_level_report(level, songs):
-    reqs = PLATINUM[level]["main"]
-    subs = PLATINUM[level]["subs"]
+    display = rank_display_name(rank_key)
+    reqs    = reqs_data["main"]
+    subs    = reqs_data["subs"]
 
-    results = [evaluate(r, songs) for r in reqs]
-    met_count   = sum(1 for met, _, _ in results if met is True)
-    assessable  = sum(1 for met, _, _ in results if met is not None)
+    results    = [evaluate(r, songs) for r in reqs]
+    met_count  = sum(1 for met, _, _ in results if met is True)
+    assessable = sum(1 for met, _, _ in results if met is not None)
 
     print(f"\n{'─' * 62}")
-    print(f"  PLATINUM {ROMAN[level]}   ({met_count}/{assessable} assessable requirements met)")
+    print(f"  {display}   ({met_count}/{assessable} assessable requirements met)")
     print(f"{'─' * 62}")
 
     print("  Main requirements:")
     for req, (met, progress, detail) in zip(reqs, results):
-        icon   = ICON[met]
-        label  = req["label"]
-        line   = f"    {icon}  {label:<42} {progress}"
+        line = f"    {ICON[met]}  {req['label']:<42} {progress}"
         if detail:
             line += f"  · {detail}"
         print(line)
@@ -262,38 +297,44 @@ def print_level_report(level, songs):
     print("\n  Substitutions:")
     for sub in subs:
         met, progress, detail = evaluate(sub, songs)
-        icon  = ICON[met]
-        label = sub["label"]
-        line  = f"    {icon}  {label:<42} {progress}"
+        line = f"    {ICON[met]}  {sub['label']:<42} {progress}"
         if detail and not met:
             line += f"  · {detail}"
         print(line)
 
-def print_summary(songs):
+
+def print_summary(songs: list):
     print("\n" + "═" * 62)
     print("  DDR Life4 Platinum — Overview")
     print("═" * 62)
-    for level in range(1, 6):
-        reqs    = PLATINUM[level]["main"]
-        results = [evaluate(r, songs) for r in reqs]
-        met     = sum(1 for m, _, _ in results if m is True)
-        total   = sum(1 for m, _, _ in results if m is not None)
-        icon    = "✅" if met == total else ("🔶" if met > 0 else "❌")
-        print(f"  {icon}  Platinum {ROMAN[level]:<5}  {met}/{total} met  (Trials excluded)")
+    for n in range(1, 6):
+        rank_key  = f"platinum{n}"
+        reqs      = get_rank_reqs(rank_key)["main"]
+        results   = [evaluate(r, songs) for r in reqs]
+        met       = sum(1 for m, _, _ in results if m is True)
+        total     = sum(1 for m, _, _ in results if m is not None)
+        icon      = "✅" if met == total else ("🔶" if met > 0 else "❌")
+        print(f"  {icon}  Platinum {ROMAN[n]:<5}  {met}/{total} met  (Trials excluded)")
 
 # ── Main ─────────────────────────────────────────────────────────────────────────
 
 def main():
-    csv_path     = None
-    target_level = None
+    csv_path  = None
+    rank_args = []
 
     for arg in sys.argv[1:]:
-        if arg.isdigit() and 1 <= int(arg) <= 5:
-            target_level = int(arg)
-        elif Path(arg).exists():
+        if Path(arg).exists():
             csv_path = arg
         else:
-            print(f"Warning: '{arg}' not recognized (expected a CSV path or level 1–5)")
+            rank_args.append(arg)
+
+    rank_key = None
+    if rank_args:
+        candidate = " ".join(rank_args)
+        rank_key  = normalize_rank_name(candidate)
+        if rank_key is None:
+            print(f"Warning: '{candidate}' is not a recognized rank name. "
+                  f"Examples: platinum1, gold3, 'Platinum III'")
 
     if csv_path is None:
         candidates = sorted(Path(".").glob("scores*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
@@ -306,14 +347,15 @@ def main():
     songs = load_scores(csv_path)
     print(f"Loaded {len(songs)} score entries.\n")
 
-    if target_level:
-        print_level_report(target_level, songs)
+    if rank_key:
+        print_rank_report(rank_key, songs)
     else:
         print_summary(songs)
-        for level in range(1, 6):
-            print_level_report(level, songs)
+        for n in range(1, 6):
+            print_rank_report(f"platinum{n}", songs)
 
     print()
+
 
 if __name__ == "__main__":
     main()

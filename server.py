@@ -16,6 +16,7 @@ import os
 import re
 import urllib.request
 import uvicorn
+from datetime import date as _date
 from pathlib import Path
 from starlette.responses import PlainTextResponse
 from mcp.server.fastmcp import FastMCP
@@ -23,13 +24,17 @@ from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from mcp.server.transport_security import TransportSecuritySettings
 
 # Shared evaluation logic lives in tracker.py
-from tracker import PLATINUM, ROMAN, ICON, AAA_SCORE, evaluate
+from tracker import ROMAN, ICON, AAA_SCORE, evaluate, normalize_rank_name, get_rank_reqs, rank_display_name
 
 # ── Config ───────────────────────────────────────────────────────────────────────
 
 SCORES_FILE   = Path(os.environ.get("SCORES_PATH", "/data/scores.csv"))
-PLAYLIST_FILE = Path(os.environ.get("SCORES_PATH", "/data/scores.csv")).parent / "playlist.json"
+SCORES_DIR    = SCORES_FILE.parent
+PLAYLIST_FILE = SCORES_DIR / "playlist.json"
 API_KEY       = os.environ.get("DDR_API_KEY", "")
+
+GRADE_ORDER = ["E", "D", "D+", "C-", "C", "C+", "B-", "B", "B+", "A-", "A", "A+", "AA-", "AA", "AA+", "AAA"]
+LAMP_ORDER  = ["Fail", "Clear", "FC", "GFC", "PFC", "MFC"]
 
 # Maps 3icecream full difficulty name → standard DDR abbreviation
 DIFF_ABBREV = {
@@ -44,12 +49,12 @@ mcp = FastMCP("DDR Tracker")
 
 # ── Score I/O ─────────────────────────────────────────────────────────────────────
 
-def load_scores():
-    """Load scores from stored CSV. Returns None if no file exists yet."""
-    if not SCORES_FILE.exists():
+def _parse_scores(path: Path) -> list | None:
+    """Load scores from a CSV path. Returns None if file doesn't exist."""
+    if not path.exists():
         return None
     songs = []
-    with open(SCORES_FILE, newline="", encoding="utf-8") as f:
+    with open(path, newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             songs.append({
                 "id":    row["Song ID"],
@@ -63,11 +68,29 @@ def load_scores():
     return songs
 
 
+def load_scores():
+    """Load current scores. Returns None if no file exists yet."""
+    return _parse_scores(SCORES_FILE)
+
+
+def list_snapshot_dates() -> list[str]:
+    """Return sorted list of dates for which a snapshot CSV exists."""
+    dates = []
+    for f in SCORES_DIR.glob("scores_????-??-??.csv"):
+        m = re.search(r'scores_(\d{4}-\d{2}-\d{2})\.csv', f.name)
+        if m:
+            dates.append(m.group(1))
+    return sorted(dates)
+
+
 def save_scores(csv_text: str) -> int:
-    """Save CSV text to disk. Returns number of rows saved."""
-    SCORES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    SCORES_FILE.write_text(csv_text.strip(), encoding="utf-8")
-    return sum(1 for _ in csv.DictReader(io.StringIO(csv_text.strip())))
+    """Save CSV to the current file and a dated snapshot. Returns row count."""
+    SCORES_DIR.mkdir(parents=True, exist_ok=True)
+    text = csv_text.strip()
+    SCORES_FILE.write_text(text, encoding="utf-8")
+    dated = SCORES_DIR / f"scores_{_date.today().isoformat()}.csv"
+    dated.write_text(text, encoding="utf-8")
+    return sum(1 for _ in csv.DictReader(io.StringIO(text)))
 
 # ── Playlist I/O ─────────────────────────────────────────────────────────────────
 
@@ -142,14 +165,18 @@ def scrape_song_page(url: str) -> dict:
 
 # ── Display helpers ───────────────────────────────────────────────────────────────
 
-def format_level(level: int, songs: list) -> str:
-    reqs    = PLATINUM[level]["main"]
-    subs    = PLATINUM[level]["subs"]
+def format_rank(rank_key: str, songs: list) -> str:
+    reqs_data = get_rank_reqs(rank_key)
+    if reqs_data is None:
+        return f"Unknown rank: {rank_key}"
+    display = rank_display_name(rank_key)
+    reqs    = reqs_data["main"]
+    subs    = reqs_data["subs"]
     results = [evaluate(r, songs) for r in reqs]
     met     = sum(1 for m, _, _ in results if m is True)
     total   = sum(1 for m, _, _ in results if m is not None)
 
-    lines = [f"PLATINUM {ROMAN[level]}  ({met}/{total} assessable requirements met)", ""]
+    lines = [f"{display}  ({met}/{total} assessable requirements met)", ""]
     lines.append("Main requirements:")
     for req, (m, progress, detail) in zip(reqs, results):
         line = f"  {ICON[m]} {req['label']:<42} {progress}"
@@ -184,28 +211,32 @@ def parse_score_gap(progress: str):
 # ── Tools ─────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
-def check_progress(level: int = 0) -> str:
+def check_progress(rank: str = "") -> str:
     """
-    Check your Life4 Platinum rank progress.
+    Check your Life4 rank progress.
 
     Args:
-        level: Platinum level to check (1–5). Pass 0 or omit for an overview of all levels.
+        rank: Rank to check, e.g. "platinum1", "gold3", "Diamond II".
+              Leave blank for an overview of all Platinum levels.
     """
     songs = load_scores()
     if songs is None:
         return "No score data on file. Use upload_scores to submit your CSV export."
 
-    if 1 <= level <= 5:
-        return format_level(level, songs)
+    if rank.strip():
+        rank_key = normalize_rank_name(rank)
+        if rank_key is None:
+            return f"Unknown rank '{rank}'. Examples: platinum1, gold3, 'Diamond II'"
+        return format_rank(rank_key, songs)
 
-    lines = [f"Loaded {len(songs)} score entries.\n", "OVERVIEW"]
-    for lvl in range(1, 6):
-        reqs    = PLATINUM[lvl]["main"]
+    lines = [f"Loaded {len(songs)} score entries.\n", "PLATINUM OVERVIEW"]
+    for n in range(1, 6):
+        reqs    = get_rank_reqs(f"platinum{n}")["main"]
         results = [evaluate(r, songs) for r in reqs]
         met     = sum(1 for m, _, _ in results if m is True)
         total   = sum(1 for m, _, _ in results if m is not None)
         icon    = "✅" if met == total else ("🔶" if met > 0 else "❌")
-        lines.append(f"  {icon}  Platinum {ROMAN[lvl]:<5}  {met}/{total} met  (Trials excluded)")
+        lines.append(f"  {icon}  Platinum {ROMAN[n]:<5}  {met}/{total} met  (Trials excluded)")
     return "\n".join(lines)
 
 
@@ -221,17 +252,17 @@ def get_focus() -> str:
 
     # Find the first unfinished platinum level
     target = None
-    for lvl in range(1, 6):
-        reqs    = PLATINUM[lvl]["main"]
+    for n in range(1, 6):
+        reqs    = get_rank_reqs(f"platinum{n}")["main"]
         results = [evaluate(r, songs) for r in reqs]
         if any(m is False for m, _, _ in results):
-            target = lvl
+            target = n
             break
 
     if target is None:
         return "All assessable requirements for Platinum V are met! Check Trials manually."
 
-    reqs    = PLATINUM[target]["main"]
+    reqs    = get_rank_reqs(f"platinum{target}")["main"]
     results = [evaluate(r, songs) for r in reqs]
     unmet   = [(r, p, d) for r, (m, p, d) in zip(reqs, results) if m is False]
 
@@ -266,7 +297,7 @@ def get_focus() -> str:
             current, total = parse_volume_progress(progress)
             grind.append((label, progress, detail, f"Need {total - current} more"))
 
-    lines = [f"🎮 Target: Platinum {ROMAN[target]}", ""]
+    lines = [f"🎮 Target: {rank_display_name(f'platinum{target}')}", ""]
 
     if immediate:
         lines.append("🎯 FINISH THESE FIRST:")
@@ -321,6 +352,106 @@ def upload_scores(csv_text: str) -> str:
 
     n = save_scores(csv_text)
     return f"✅ Saved {n} score entries. Run check_progress to see your updated stats."
+
+
+@mcp.tool()
+def compare_progress(since: str = "") -> str:
+    """
+    Compare your current scores against a previous snapshot to see what improved.
+
+    Args:
+        since: Date of the snapshot to compare against (YYYY-MM-DD).
+               Leave blank to compare against the most recent prior snapshot.
+               Pass "list" to see all available snapshot dates.
+    """
+    dates = list_snapshot_dates()
+
+    if since.strip().lower() == "list":
+        if not dates:
+            return "No snapshots on file yet. Upload your scores to start tracking history."
+        return "Available snapshots:\n" + "\n".join(f"  {d}" for d in reversed(dates))
+
+    if not since:
+        today = _date.today().isoformat()
+        prior_dates = [d for d in dates if d < today]
+        if not prior_dates:
+            return ("No prior snapshots yet — only today's upload exists. "
+                    "Upload again after your next play session to start seeing comparisons.")
+        prior_date = prior_dates[-1]
+    else:
+        if since not in dates:
+            avail = ", ".join(dates) if dates else "none"
+            return f"No snapshot found for {since}. Available: {avail}"
+        prior_date = since
+
+    prior   = _parse_scores(SCORES_DIR / f"scores_{prior_date}.csv")
+    current = load_scores()
+
+    if prior is None:
+        return f"Could not load snapshot for {prior_date}."
+    if current is None:
+        return "No current scores on file."
+
+    prior_map   = {(s["id"], s["diff"]): s for s in prior}
+    current_map = {(s["id"], s["diff"]): s for s in current}
+
+    new_songs, score_improvements, grade_improvements, lamp_improvements = [], [], [], []
+
+    for key, curr in current_map.items():
+        if key not in prior_map:
+            new_songs.append(curr)
+            continue
+        prev = prior_map[key]
+
+        if curr["score"] > prev["score"]:
+            score_improvements.append((curr["score"] - prev["score"], curr, prev))
+
+        ci = GRADE_ORDER.index(curr["grade"]) if curr["grade"] in GRADE_ORDER else -1
+        pi = GRADE_ORDER.index(prev["grade"]) if prev["grade"] in GRADE_ORDER else -1
+        if ci > pi >= 0:
+            grade_improvements.append((curr, prev))
+
+        ci = LAMP_ORDER.index(curr["lamp"]) if curr["lamp"] in LAMP_ORDER else -1
+        pi = LAMP_ORDER.index(prev["lamp"]) if prev["lamp"] in LAMP_ORDER else -1
+        if ci > pi >= 0:
+            lamp_improvements.append((curr, prev))
+
+    if not new_songs and not score_improvements and not grade_improvements and not lamp_improvements:
+        return f"No changes detected since {prior_date}."
+
+    score_improvements.sort(key=lambda x: -x[0])
+    new_songs.sort(key=lambda s: s["level"])
+
+    lines = [f"Progress since {prior_date}", ""]
+
+    if lamp_improvements:
+        lines.append(f"🏆 Lamp improvements ({len(lamp_improvements)}):")
+        for curr, prev in lamp_improvements:
+            lines.append(f"  {curr['name']}  [{curr['diff']} lv{curr['level']}]  {prev['lamp']} → {curr['lamp']}")
+        lines.append("")
+
+    if grade_improvements:
+        lines.append(f"📈 Grade improvements ({len(grade_improvements)}):")
+        for curr, prev in grade_improvements:
+            lines.append(f"  {curr['name']}  [{curr['diff']} lv{curr['level']}]  {prev['grade']} → {curr['grade']}")
+        lines.append("")
+
+    if score_improvements:
+        shown = score_improvements[:20]
+        lines.append(f"💯 Score improvements ({len(score_improvements)}" +
+                     (f", top 20" if len(score_improvements) > 20 else "") + "):")
+        for delta, curr, prev in shown:
+            lines.append(f"  +{delta:,}  {curr['name']}  [{curr['diff']} lv{curr['level']}]"
+                         f"  {prev['score']:,} → {curr['score']:,}")
+        lines.append("")
+
+    if new_songs:
+        lines.append(f"🆕 {len(new_songs)} new charts:")
+        for s in new_songs:
+            lines.append(f"  {s['name']}  [{s['diff']} lv{s['level']}]  {s['score']:,}  {s['grade']}  {s['lamp']}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 # ── Playlist tools ───────────────────────────────────────────────────────────────
@@ -404,9 +535,10 @@ def get_playlist(level: int = 0, tag: str = "") -> str:
         if level == 0:
             lines.append(f"── Level {rating} ──")
         for e in by_rating[rating]:
+            ice     = f"  🍦 https://3icecream.com/ddr/song_details/{e['song_id']}" if e.get("song_id") else ""
             yt      = f"  🎬 {e['youtube_url']}" if e["youtube_url"] else ""
             tags    = f"  [{', '.join(e['tags'])}]" if e["tags"] else ""
-            lines.append(f"  {e['song_name']}  [{e['difficulty']}]{tags}{yt}")
+            lines.append(f"  {e['song_name']}  [{e['difficulty']}]{tags}{ice}{yt}")
         if level == 0:
             lines.append("")
 
