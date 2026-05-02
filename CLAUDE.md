@@ -41,7 +41,7 @@ Two entry points sharing a common scoring engine:
 | Tool | Purpose |
 |------|---------|
 | `check_progress(level=0)` | Overview of all levels or detailed report |
-| `get_focus()` | AI-prioritized recommendations from current progress |
+| `get_focus()` | Session recommendations with ceiling/floor framing based on current progress |
 | `upload_scores(csv_text)` | Accept pasted CSV, validate & store |
 | `add_to_playlist(url, difficulty)` | Scrape 3icecream.com song page, store the specified chart (DSP/ESP/CSP) |
 | `get_playlist(level=0)` | Display playlist, optionally filtered by level |
@@ -63,6 +63,8 @@ Two entry points sharing a common scoring engine:
 - **`aaa`**: count songs at level with score ≥ 990,000
 - **`pfc`**: count songs at level_min+ with lamp == "PFC"
 - **`trial`**: untrackable from CSV; always returns `None`
+
+`peak` maps to **ceiling work** (pushing your best score on a specific chart); `volume`, `aaa`, and `pfc` map to **floor work** (consistency across many songs). `get_focus` uses this distinction to recommend a session type. See https://iidx.org/theory/skill_ceiling_floor for the source theory.
 
 Each Platinum level has 9 main requirements (1 untrackable trial) and ~5 substitution options (1-for-1 swaps allowed).
 
