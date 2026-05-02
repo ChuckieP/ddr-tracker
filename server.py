@@ -208,6 +208,43 @@ def parse_score_gap(progress: str):
     except (ValueError, IndexError):
         return None
 
+
+def _session_type(unmet: list) -> tuple[str, str]:
+    """
+    Classify session focus based on unmet requirement types and ceiling gaps.
+    Returns (label, explanation) for display in get_focus.
+
+    Ceiling work (peak reqs) = pushing your best score on specific charts.
+    Floor work (volume/aaa/pfc reqs) = building consistency across many songs.
+    Improving your ceiling tends to pull up your floor organically; the reverse
+    is not reliably true — so ceiling gaps take priority when they're significant.
+    """
+    ceiling = [(r, p, d) for r, p, d in unmet if r["type"] == "peak"]
+    floor   = [(r, p, d) for r, p, d in unmet if r["type"] in ("volume", "aaa", "pfc")]
+
+    if not ceiling:
+        return (
+            "🏗️  FLOOR RAISE",
+            "Peak score requirements are on track. Focus broadly — play a variety of songs\n"
+            "   at this level to build volume and consistency counts.",
+        )
+
+    gaps = [parse_score_gap(p) for _, p, _ in ceiling]
+    has_large_gap = any(g is not None and g > 20_000 for g in gaps)
+
+    if has_large_gap:
+        return (
+            "🚀 CEILING PUSH",
+            "You have significant peak score gaps. Spend focused attempts on those specific\n"
+            "   charts — improving your ceiling tends to pull up overall consistency over time.",
+        )
+
+    return (
+        "⚖️  BALANCED SESSION",
+        "Your peak scores are close to threshold — a few hard attempts could close them.\n"
+        "   Fill the rest of the session with volume work to keep floor progress moving.",
+    )
+
 # ── Tools ─────────────────────────────────────────────────────────────────────────
 
 @mcp.tool()
@@ -275,7 +312,7 @@ def get_focus() -> str:
         if t == "volume":
             current, total = parse_volume_progress(progress)
             remaining = total - current
-            entry = (label, progress, detail)
+            entry = (label, progress, detail, t)
             if remaining <= 2:
                 immediate.append((*entry, f"Only {remaining} more needed!"))
             elif current / total >= 0.5:
@@ -285,7 +322,7 @@ def get_focus() -> str:
 
         elif t == "peak":
             gap   = parse_score_gap(progress)
-            entry = (label, progress, detail)
+            entry = (label, progress, detail, t)
             if gap is not None and gap <= 20_000:
                 immediate.append((*entry, "Gap under 20k — very reachable!"))
             elif gap is not None and gap <= 50_000:
@@ -295,14 +332,24 @@ def get_focus() -> str:
 
         elif t in ("aaa", "pfc"):
             current, total = parse_volume_progress(progress)
-            grind.append((label, progress, detail, f"Need {total - current} more"))
+            grind.append((label, progress, detail, t, f"Need {total - current} more"))
 
-    lines = [f"🎮 Target: {rank_display_name(f'platinum{target}')}", ""]
+    session_label, session_note = _session_type(unmet)
+    lines = [
+        f"🎮 Target: {rank_display_name(f'platinum{target}')}",
+        "",
+        session_label,
+        f"   {session_note}",
+        "",
+    ]
+
+    def _work_tag(req_type: str) -> str:
+        return "ceiling" if req_type == "peak" else "floor"
 
     if immediate:
         lines.append("🎯 FINISH THESE FIRST:")
-        for label, progress, detail, note in immediate:
-            lines.append(f"  • {label}  [{progress}]")
+        for label, progress, detail, req_type, note in immediate:
+            lines.append(f"  • {label}  [{progress}]  · {_work_tag(req_type)}")
             lines.append(f"    → {note}")
             if detail:
                 lines.append(f"    ↳ {detail}")
@@ -310,8 +357,8 @@ def get_focus() -> str:
 
     if session:
         lines.append("📈 GOOD SESSION GOALS:")
-        for label, progress, detail, note in session:
-            lines.append(f"  • {label}  [{progress}]")
+        for label, progress, detail, req_type, note in session:
+            lines.append(f"  • {label}  [{progress}]  · {_work_tag(req_type)}")
             lines.append(f"    → {note}")
             if detail:
                 lines.append(f"    ↳ {detail}")
@@ -319,8 +366,8 @@ def get_focus() -> str:
 
     if grind:
         lines.append("🔁 KEEP CHIPPING AWAY:")
-        for label, progress, detail, note in grind:
-            lines.append(f"  • {label}  [{progress}]")
+        for label, progress, detail, req_type, note in grind:
+            lines.append(f"  • {label}  [{progress}]  · {_work_tag(req_type)}")
             lines.append(f"    → {note}")
         lines.append("")
 
