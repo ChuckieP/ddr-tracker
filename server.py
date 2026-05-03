@@ -83,14 +83,12 @@ def list_snapshot_dates() -> list[str]:
     return sorted(dates)
 
 
-def save_scores(csv_text: str) -> int:
-    """Save CSV to the current file and a dated snapshot. Returns row count."""
+def save_scores(csv_text: str) -> None:
+    """Save CSV to the current file and a dated snapshot."""
     SCORES_DIR.mkdir(parents=True, exist_ok=True)
-    text = csv_text.strip()
-    SCORES_FILE.write_text(text, encoding="utf-8")
+    SCORES_FILE.write_text(csv_text, encoding="utf-8")
     dated = SCORES_DIR / f"scores_{_date.today().isoformat()}.csv"
-    dated.write_text(text, encoding="utf-8")
-    return sum(1 for _ in csv.DictReader(io.StringIO(text)))
+    dated.write_text(csv_text, encoding="utf-8")
 
 # ── Playlist I/O ─────────────────────────────────────────────────────────────────
 
@@ -383,8 +381,9 @@ def upload_scores(csv_text: str) -> str:
     Args:
         csv_text: Full text content of your scores CSV export.
     """
+    text = csv_text.strip()
     try:
-        reader   = csv.DictReader(io.StringIO(csv_text.strip()))
+        reader   = csv.DictReader(io.StringIO(text))
         required = {"Song ID", "Song Name", "Difficulty", "Rating", "Score", "Grade", "Lamp"}
         missing  = required - set(reader.fieldnames or [])
         if missing:
@@ -397,8 +396,8 @@ def upload_scores(csv_text: str) -> str:
     except Exception as e:
         return f"Error parsing CSV: {e}"
 
-    n = save_scores(csv_text)
-    return f"✅ Saved {n} score entries. Run check_progress to see your updated stats."
+    save_scores(text)
+    return f"✅ Saved {len(rows)} score entries. Run check_progress to see your updated stats."
 
 
 @mcp.tool()
